@@ -1,0 +1,38 @@
+# Example plugin config for CLIProxyAPI
+# Place under plugins: in your config.yaml
+
+plugins:
+  path:
+    - /absolute/path/to/bin/codex-retry-gateway-go.so
+  configs:
+    codex-retry-gateway:
+      enabled: true
+
+      # Match mode:
+      #   formula_518n_minus_2 (default) — matches reasoning_tokens >= 516 && (value + 2) % 518 === 0
+      #                                       catches 516, 1034, 1552, 2070, 2588, 3106, ...
+      #   manual                          — only matches the explicit values in reasoning_equals
+      reasoning_match_mode: formula_518n_minus_2
+      reasoning_equals: [516, 1034, 1552, 2070, 2588, 3106]
+
+      # Which response paths to inspect
+      intercept_streaming: true
+      intercept_non_streaming: true
+
+      # Max internal retries upstream before we give up and return non_stream_status_code.
+      # 0 = intercept immediately, no internal retries.
+      guard_retry_attempts: 5
+
+      # HTTP status code returned to the client when retries are exhausted (default 502).
+      non_stream_status_code: 502
+
+      # Retry (and count against the same budget) when upstream reports
+      # "Selected model is at capacity. Please try a different model."
+      retry_upstream_capacity_errors: true
+
+      # Emit host log lines on every match.
+      log_match: true
+
+      # Optional provider filter — empty intercepts everything;
+      # restrict to ["codex"] to only proxy OpenAI Codex operations through the gateway.
+      upstream_providers: []
