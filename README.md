@@ -70,25 +70,31 @@ plugins:
 | `log_match` | bool | `true` | Emit host log lines on every match |
 | `upstream_providers` | array | `[]` | Optional provider-key filter (`["codex"]`, `["claude"]`, …). Empty intercepts everything. |
 
+## Install
+
+Download the latest Linux AMD64 artifact from GitHub Releases:
+
+```bash
+curl -L -o codex-retry-gateway.tar.gz \
+  https://github.com/Av1anJay/cliproxyapi-retry-gateway/releases/latest/download/codex-retry-gateway_VERSION_linux_amd64.tar.gz
+```
+
+Or build locally.
+
 ## Build
 
-Requires Go 1.26+ (the CLIProxyAPI repo toolchain requires it).
+Requires Go 1.26+ (the CLIProxyAPI module floor). Go 1.21+ can fetch the
+required toolchain automatically when `GOTOOLCHAIN=auto` is enabled.
 
 ```bash
-# with CLIProxyAPI checked out next to this repo at ../CLIProxyAPI
 make linux      # → bin/codex-retry-gateway-go.so
-make darwin     # → bin/codex-retry-gateway-go.dylib
-make windows    # → bin/codex-retry-gateway-go.dll
 ```
 
-If your CLIProxyAPI checkout lives elsewhere, point at it:
+Release artifacts are generated with GoReleaser:
 
 ```bash
-make linux CLI_PROXY_API_ROOT=/path/to/CLIProxyAPI
+goreleaser release --snapshot --clean
 ```
-
-The `go.mod` `replace` directive already pins the CLIProxyAPI source to
-`/tmp/CLIProxyAPI` — adjust it to your checkout path.
 
 ## Management API
 

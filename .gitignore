@@ -1,4 +1,5 @@
 bin/
+dist/
 *.so
 *.dylib
 *.dll
