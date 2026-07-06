@@ -104,14 +104,15 @@ Release artifacts are generated with GoReleaser:
 goreleaser release --snapshot --clean
 ```
 
-## Management API
+## Management Panel
 
-Two routes are exposed under the plugin management namespace:
+A browser panel is exposed as a CPA plugin resource:
 
 | Route | Returns |
 | --- | --- |
-| `GET /__plugins/codex-retry-gateway/status` | Runtime stats since plugin load (rule matches, retries, 502s) |
-| `GET /__plugins/codex-retry-gateway/config`  | Current effective plugin config |
+| `GET /v0/resource/plugins/codex-retry-gateway/panel` | HTML dashboard with runtime counters and current config |
+| `GET /v0/management/plugins/codex-retry-gateway/status` | JSON runtime stats since plugin load (matches, retries, 502s) |
+| `GET /v0/management/plugins/codex-retry-gateway/config` | JSON effective plugin config |
 
 ## Architecture
 
@@ -143,8 +144,7 @@ through the standard auth/executor stack.
 
 ## Limitations vs the Node.js original
 
-- **No management UI.** Stats are exposed via the Management API only.
-- **No history import / analytics dashboard.** Just the runtime counters.
+- **No history import / long-term analytics.** The panel only shows process-lifetime runtime counters.
 - **No continuation recovery.** When a streaming response matches, we buffer →
   retry, we do not attempt a Responses continuation write-back. The original
   gateway's `continuation_recovery` strategy is not implemented here.

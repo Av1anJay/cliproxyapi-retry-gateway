@@ -58,6 +58,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,27 +79,73 @@ var (
 
 // runtimeStats tracks interception statistics since plugin load (process lifetime).
 type runtimeStats struct {
-	TotalRequests       int64  `json:"total_requests"`
-	CheckedResponses    int64  `json:"checked_responses"`
-	RuleMatches         int64  `json:"rule_matches"`
-	ActualInterceptions int64  `json:"actual_interceptions"`
-	InternalRetries     int64  `json:"internal_retries"`
-	SuccessAfterRetry   int64  `json:"success_after_retry"`
-	Returned502         int64  `json:"returned_502"`
+	TotalRequests       int64 `json:"total_requests"`
+	CheckedResponses    int64 `json:"checked_responses"`
+	RuleMatches         int64 `json:"rule_matches"`
+	ActualInterceptions int64 `json:"actual_interceptions"`
+	InternalRetries     int64 `json:"internal_retries"`
+	SuccessAfterRetry   int64 `json:"success_after_retry"`
+	Returned502         int64 `json:"returned_502"`
+}
+
+// intList accepts either YAML numbers or quoted numeric strings.
+// Management UIs sometimes serialize array items as strings; accepting both keeps
+// hot reloads robust instead of failing plugin.reconfigure.
+type intList []int
+
+func (l *intList) UnmarshalYAML(node *yaml.Node) error {
+	if l == nil || node == nil {
+		return nil
+	}
+	var out []int
+	appendOne := func(raw string) error {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return nil
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("invalid integer %q", raw)
+		}
+		out = append(out, value)
+		return nil
+	}
+
+	switch node.Kind {
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			if item == nil {
+				continue
+			}
+			if err := appendOne(item.Value); err != nil {
+				return err
+			}
+		}
+	case yaml.ScalarNode:
+		for _, part := range strings.Split(node.Value, ",") {
+			if err := appendOne(part); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("expected integer list, got YAML kind %d", node.Kind)
+	}
+	*l = out
+	return nil
 }
 
 // pluginConfig is the per-request configuration loaded from plugins.configs.codex-retry-gateway.
 type pluginConfig struct {
-	Enabled                bool     `yaml:"enabled"`
-	ReasoningEquals        []int    `yaml:"reasoning_equals"`
-	ReasoningMatchMode     string   `yaml:"reasoning_match_mode"`
-	InterceptStreaming     bool     `yaml:"intercept_streaming"`
-	InterceptNonStreaming  bool     `yaml:"intercept_non_streaming"`
-	GuardRetryAttempts     int      `yaml:"guard_retry_attempts"`
-	NonStreamStatusCode    int      `yaml:"non_stream_status_code"`
-	RetryCapacityErrors    bool     `yaml:"retry_upstream_capacity_errors"`
-	LogMatch               bool     `yaml:"log_match"`
-	UpstreamProviders      []string `yaml:"upstream_providers"`
+	Enabled               bool     `yaml:"enabled"`
+	ReasoningEquals       intList  `yaml:"reasoning_equals"`
+	ReasoningMatchMode    string   `yaml:"reasoning_match_mode"`
+	InterceptStreaming    bool     `yaml:"intercept_streaming"`
+	InterceptNonStreaming bool     `yaml:"intercept_non_streaming"`
+	GuardRetryAttempts    int      `yaml:"guard_retry_attempts"`
+	NonStreamStatusCode   int      `yaml:"non_stream_status_code"`
+	RetryCapacityErrors   bool     `yaml:"retry_upstream_capacity_errors"`
+	LogMatch              bool     `yaml:"log_match"`
+	UpstreamProviders     []string `yaml:"upstream_providers"`
 }
 
 type envelope struct {
@@ -119,15 +166,16 @@ type lifecycleRequest struct {
 type registration struct {
 	SchemaVersion uint32                 `json:"schema_version"`
 	Metadata      pluginapi.Metadata     `json:"metadata"`
-	Capabilities  registrationCapability  `json:"capabilities"`
+	Capabilities  registrationCapability `json:"capabilities"`
 }
 
 type registrationCapability struct {
 	ModelRouter           bool     `json:"model_router"`
-	Executor             bool     `json:"executor"`
-	ExecutorModelScope   string   `json:"executor_model_scope"`
-	ExecutorInputFormats []string `json:"executor_input_formats"`
+	Executor              bool     `json:"executor"`
+	ExecutorModelScope    string   `json:"executor_model_scope"`
+	ExecutorInputFormats  []string `json:"executor_input_formats"`
 	ExecutorOutputFormats []string `json:"executor_output_formats"`
+	ManagementAPI         bool     `json:"management_api"`
 }
 
 type rpcExecutorRequest struct {
@@ -304,7 +352,7 @@ func configure(raw []byte) error {
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
 		Enabled:               true,
-		ReasoningEquals:       []int{516, 1034, 1552, 2070, 2588, 3106},
+		ReasoningEquals:       intList{516, 1034, 1552, 2070, 2588, 3106},
 		ReasoningMatchMode:    "formula_518n_minus_2",
 		InterceptStreaming:    true,
 		InterceptNonStreaming: true,
@@ -374,6 +422,7 @@ func pluginRegistration() registration {
 			ExecutorModelScope:    string(pluginapi.ExecutorModelScopeBoth),
 			ExecutorInputFormats:  []string{"chat-completions", "responses"},
 			ExecutorOutputFormats: []string{"chat-completions", "responses"},
+			ManagementAPI:         true,
 		},
 	}
 }
