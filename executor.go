@@ -162,9 +162,29 @@ func executeStreamWithRetry(raw []byte) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return nil, errUnmarshal
 	}
+	streamID := strings.TrimSpace(req.StreamID)
+	if streamID == "" {
+		return errorEnvelope("executor_error", "stream_id is required for executor.execute_stream"), nil
+	}
+
+	go func() {
+		errRun := runStreamWithRetry(req, streamID)
+		if errRun != nil {
+			closePluginStream(streamID, errRun.Error())
+			return
+		}
+		closePluginStream(streamID, "")
+	}()
+
+	return okEnvelope(rpcExecutorStreamResponse{
+		Headers: http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+}
+
+func runStreamWithRetry(req rpcExecutorRequest, streamID string) error {
 	cfg := loadedConfig()
 	if !cfg.Enabled || !cfg.InterceptStreaming {
-		return executeStreamPassThrough(req)
+		return executeStreamPassThrough(req, streamID)
 	}
 
 	atomic.AddInt64(&stats.TotalRequests, 1)
@@ -173,16 +193,13 @@ func executeStreamWithRetry(raw []byte) ([]byte, error) {
 		retryBudget = 5
 	}
 
-	var lastHeaders http.Header
-
 	for attempt := 0; attempt <= retryBudget; attempt++ {
 		atomic.AddInt64(&stats.CheckedResponses, 1)
-		buf, headers, status, errRun := hostModelStreamBuffered(req)
+		buf, _, status, errRun := hostModelStreamBuffered(req)
 		if errRun != nil {
 			atomic.AddInt64(&stats.Returned502, 1)
-			return errorEnvelopeForStatus(cfg.NonStreamStatusCode, errRun.Error())
+			return errRun
 		}
-		lastHeaders = headers
 
 		if matchUpstreamCapacityError(buf, status, cfg) {
 			atomic.AddInt64(&stats.RuleMatches, 1)
@@ -205,27 +222,20 @@ func executeStreamWithRetry(raw []byte) ([]byte, error) {
 			atomic.AddInt64(&stats.ActualInterceptions, 1)
 			atomic.AddInt64(&stats.Returned502, 1)
 			if cfg.LogMatch {
-				pluginLog("stream_reasoning_tokens_match action=return_status_%d %s", cfg.NonStreamStatusCode, detail)
+				pluginLog("stream_reasoning_tokens_match action=close_with_error %s", detail)
 			}
-			return buildStatusResponse(cfg.NonStreamStatusCode, detail, lastHeaders)
+			return fmt.Errorf("retry-gateway: %s", detail)
 		}
 
 		if attempt > 0 {
 			atomic.AddInt64(&stats.SuccessAfterRetry, 1)
 		}
-		// Forward the buffered stream as a single chunk via the executor stream response.
-		chunks := []pluginapi.ExecutorStreamChunk{
-			{Payload: buf},
-		}
-		return okEnvelope(rpcExecutorStreamResponse{
-			Headers: headers,
-			Chunks:  chunks,
-		})
+		return emitPluginStreamChunk(streamID, bytes.Clone(buf))
 	}
 
 	atomic.AddInt64(&stats.ActualInterceptions, 1)
 	atomic.AddInt64(&stats.Returned502, 1)
-	return buildStatusResponse(cfg.NonStreamStatusCode, "stream_retry_budget_exhausted", lastHeaders)
+	return fmt.Errorf("stream_retry_budget_exhausted")
 }
 
 // executeHostModelPass runs a single host.model.execute without any interception and
@@ -243,16 +253,12 @@ func executeHostModelPass(req rpcExecutorRequest) ([]byte, error) {
 
 // executeStreamPassThrough is a single-pass buffered stream forwarder used when
 // intercept_streaming is false.
-func executeStreamPassThrough(req rpcExecutorRequest) ([]byte, error) {
-	buf, headers, _, errRun := hostModelStreamBuffered(req)
+func executeStreamPassThrough(req rpcExecutorRequest, streamID string) error {
+	buf, _, _, errRun := hostModelStreamBuffered(req)
 	if errRun != nil {
-		return errorEnvelopeForStatus(502, errRun.Error())
+		return errRun
 	}
-	chunks := []pluginapi.ExecutorStreamChunk{{Payload: buf}}
-	return okEnvelope(rpcExecutorStreamResponse{
-		Headers: headers,
-		Chunks:  chunks,
-	})
+	return emitPluginStreamChunk(streamID, bytes.Clone(buf))
 }
 
 // ---- Host API bridge ----—
@@ -368,6 +374,38 @@ func hostModelStreamBuffered(req rpcExecutorRequest) ([]byte, http.Header, int, 
 		}
 	}
 	return buf.Bytes(), resp.Headers, resp.StatusCode, nil
+}
+
+type rpcStreamEmitRequest struct {
+	StreamID string `json:"stream_id"`
+	Payload  []byte `json:"payload,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+type rpcStreamCloseRequest struct {
+	StreamID string `json:"stream_id"`
+	Error    string `json:"error,omitempty"`
+}
+
+func emitPluginStreamChunk(streamID string, payload []byte) error {
+	if strings.TrimSpace(streamID) == "" {
+		return fmt.Errorf("plugin stream id is required")
+	}
+	_, errCall := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmitRequest{
+		StreamID: streamID,
+		Payload:  payload,
+	})
+	return errCall
+}
+
+func closePluginStream(streamID, errMsg string) {
+	if strings.TrimSpace(streamID) == "" {
+		return
+	}
+	_, _ = callHost(pluginabi.MethodHostStreamClose, rpcStreamCloseRequest{
+		StreamID: streamID,
+		Error:    strings.TrimSpace(errMsg),
+	})
 }
 
 func closeHostModelStream(streamID string) error {
