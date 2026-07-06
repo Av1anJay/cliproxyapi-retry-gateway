@@ -57,8 +57,6 @@ import "C"
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"

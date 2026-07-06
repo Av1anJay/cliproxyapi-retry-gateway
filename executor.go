@@ -88,14 +88,11 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 	}
 
 	atomic.AddInt64(&stats.TotalRequests, 1)
-	body := requestBodyForHost(req)
 	retryBudget := cfg.GuardRetryAttempts
 	if retryBudget < 0 {
 		retryBudget = 5
 	}
 
-	var lastBody []byte
-	var lastStatus int
 	var lastHeaders http.Header
 
 	for attempt := 0; attempt <= retryBudget; attempt++ {
@@ -106,8 +103,6 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 			atomic.AddInt64(&stats.Returned502, 1)
 			return errorEnvelopeForStatus(cfg.NonStreamStatusCode, errRun.Error())
 		}
-		lastBody = payload
-		lastStatus = status
 		lastHeaders = headers
 
 		// Capacity error → retry always (counts towards budget).
@@ -152,7 +147,6 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 	// Loop exited without return — exhausted on capacity errors.
 	atomic.AddInt64(&stats.ActualInterceptions, 1)
 	atomic.AddInt64(&stats.Returned502, 1)
-	_ = lastStatus
 	return buildStatusResponse(cfg.NonStreamStatusCode, "retry_budget_exhausted", lastHeaders)
 }
 
@@ -179,7 +173,6 @@ func executeStreamWithRetry(raw []byte) ([]byte, error) {
 		retryBudget = 5
 	}
 
-	var lastBody []byte
 	var lastHeaders http.Header
 
 	for attempt := 0; attempt <= retryBudget; attempt++ {
@@ -189,7 +182,6 @@ func executeStreamWithRetry(raw []byte) ([]byte, error) {
 			atomic.AddInt64(&stats.Returned502, 1)
 			return errorEnvelopeForStatus(cfg.NonStreamStatusCode, errRun.Error())
 		}
-		lastBody = buf
 		lastHeaders = headers
 
 		if matchUpstreamCapacityError(buf, status, cfg) {

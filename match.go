@@ -33,8 +33,8 @@ func matchReasoningTokens(body []byte, cfg pluginConfig) (bool, string, string) 
 	if !rt.Exists() {
 		return false, "", ""
 	}
-	if !rt.Type.IsNumber() {
-		// null / missing → not a match for the manual/formula path.
+	if rt.Type != gjson.Number {
+		// null / missing / non-numeric → not a match for the manual/formula path.
 		return false, "", ""
 	}
 	value := int(rt.Int())

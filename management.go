@@ -11,8 +11,8 @@ import (
 // and a minimal config snapshot at:
 //   GET /__plugins/codex-retry-gateway/status
 //   GET /__plugins/codex-retry-gateway/config
-func manifestRegistration() pluginapi.ManagementRegistration {
-	return pluginapi.ManagementRegistration{
+func manifestRegistration() pluginapi.ManagementRegistrationResponse {
+	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
 			{
 				Method:      http.MethodGet,
