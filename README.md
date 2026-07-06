@@ -72,11 +72,19 @@ plugins:
 
 ## Install
 
-Download the latest Linux AMD64 artifact from GitHub Releases:
+Download the latest artifact from GitHub Releases:
+
+| Platform | Artifact |
+| --- | --- |
+| Linux x86_64 | `codex-retry-gateway_<version>_linux_amd64.tar.gz` |
+| Linux arm64 | `codex-retry-gateway_<version>_linux_arm64.tar.gz` |
+| Windows x86_64 | `codex-retry-gateway_<version>_windows_amd64.zip` |
+
+Example:
 
 ```bash
 curl -L -o codex-retry-gateway.tar.gz \
-  https://github.com/Av1anJay/cliproxyapi-retry-gateway/releases/latest/download/codex-retry-gateway_VERSION_linux_amd64.tar.gz
+  https://github.com/Av1anJay/cliproxyapi-retry-gateway/releases/download/v0.1.1/codex-retry-gateway_0.1.1_linux_amd64.tar.gz
 ```
 
 Or build locally.

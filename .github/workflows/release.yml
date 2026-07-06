@@ -22,8 +22,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install CGO toolchain
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Install CGO cross toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            gcc-aarch64-linux-gnu \
+            gcc-mingw-w64-x86-64
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
