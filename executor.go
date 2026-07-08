@@ -24,13 +24,10 @@ func routeModel(raw []byte) ([]byte, error) {
 		return nil, errUnmarshal
 	}
 	cfg := loadedConfig()
-	if !cfg.Enabled {
+	if !bool(cfg.Enabled) {
 		return okEnvelope(pluginapi.ModelRouteResponse{Handled: false})
 	}
 
-	// Only intercept Codex/chat-completions-flagged requests. We accept everything
-	// when UpstreamProviders is empty (default) — the executor will decide per-response.
-	// Otherwise we only route matching provider tags.
 	matched := routeMatches(cfg, req)
 	resp := pluginapi.ModelRouteResponse{
 		Handled:    matched,
@@ -45,31 +42,49 @@ func routeModel(raw []byte) ([]byte, error) {
 }
 
 func routeMatches(cfg pluginConfig, req rpcModelRouteRequest) bool {
-	if len(cfg.UpstreamProviders) == 0 {
-		// route everything — our executor inspects responses and only retries hits.
-		return true
+	providers := cfg.UpstreamProviders
+	if len(providers) == 0 {
+		providers = defaultPluginConfig().UpstreamProviders
 	}
-	if req.PluginID != "" {
-		pluginID := strings.TrimSpace(req.PluginID)
-		for _, p := range cfg.UpstreamProviders {
-			if strings.EqualFold(pluginID, strings.TrimSpace(p)) {
-				return true
-			}
+	for _, provider := range providers {
+		if strings.TrimSpace(provider) == "*" {
+			return true
 		}
 	}
-	available := req.AvailableProviders
-	for _, p := range cfg.UpstreamProviders {
-		for _, avail := range available {
-			if strings.EqualFold(strings.TrimSpace(p), strings.TrimSpace(avail)) {
-				return true
-			}
+	model := strings.TrimSpace(req.RequestedModel)
+	if model == "" && len(req.Body) > 0 {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(req.Body, &body)
+		model = strings.TrimSpace(body.Model)
+	}
+	if model == "" {
+		return false
+	}
+	for _, provider := range providers {
+		provider = strings.TrimSpace(provider)
+		if provider == "" {
+			continue
+		}
+		if modelHasProviderPrefix(model, provider) {
+			return true
 		}
 	}
-	// If available providers weren't useful, route through anyway — the host
-	// dispatcher will run the request through whatever executor returned Handled
-	// for this model. Returning true keeps retry behavior even when metadata is thin.
-	// When UpstreamProviders is configured and no overlap is found, bail out.
 	return false
+}
+
+func modelHasProviderPrefix(model, provider string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if model == "" || provider == "" {
+		return false
+	}
+	return model == provider ||
+		strings.HasPrefix(model, provider+"/") ||
+		strings.HasPrefix(model, provider+":") ||
+		strings.HasPrefix(model, provider+"-") ||
+		strings.HasPrefix(model, provider+"_")
 }
 
 // executeWithRetry handles non-streaming model.execute RPC: reuses host.model.execute
@@ -82,13 +97,13 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 		return nil, errUnmarshal
 	}
 	cfg := loadedConfig()
-	if !cfg.Enabled || !cfg.InterceptNonStreaming {
+	if !bool(cfg.Enabled) || !bool(cfg.InterceptNonStreaming) {
 		// pass-through — just proxy via host.model.execute once and return.
 		return executeHostModelPass(req)
 	}
 
 	atomic.AddInt64(&stats.TotalRequests, 1)
-	retryBudget := cfg.GuardRetryAttempts
+	retryBudget := int(cfg.GuardRetryAttempts)
 	if retryBudget < 0 {
 		retryBudget = 5
 	}
@@ -101,7 +116,7 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 		if errRun != nil {
 			// host error is a 5xx transport failure — return 502 with body.
 			atomic.AddInt64(&stats.Returned502, 1)
-			return errorEnvelopeForStatus(cfg.NonStreamStatusCode, errRun.Error())
+			return errorEnvelopeForStatus(int(cfg.NonStreamStatusCode), errRun.Error())
 		}
 		lastHeaders = headers
 
@@ -109,7 +124,7 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 		if matchUpstreamCapacityError(payload, status, cfg) {
 			atomic.AddInt64(&stats.RuleMatches, 1)
 			atomic.AddInt64(&stats.InternalRetries, 1)
-			if cfg.LogMatch {
+			if bool(cfg.LogMatch) {
 				pluginLog("capacity_error_retry attempt=%d/%d status=%d", attempt+1, retryBudget, status)
 			}
 			continue
@@ -120,7 +135,7 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 			atomic.AddInt64(&stats.RuleMatches, 1)
 			if attempt+1 <= retryBudget {
 				atomic.AddInt64(&stats.InternalRetries, 1)
-				if cfg.LogMatch {
+				if bool(cfg.LogMatch) {
 					pluginLog("reasoning_tokens_match action=internal_retry remaining=%d %s", retryBudget-attempt, detail)
 				}
 				continue
@@ -128,10 +143,10 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 			// exhausted — return the configured status
 			atomic.AddInt64(&stats.ActualInterceptions, 1)
 			atomic.AddInt64(&stats.Returned502, 1)
-			if cfg.LogMatch {
-				pluginLog("reasoning_tokens_match action=return_status_%d %s", cfg.NonStreamStatusCode, detail)
+			if bool(cfg.LogMatch) {
+				pluginLog("reasoning_tokens_match action=return_status_%d %s", int(cfg.NonStreamStatusCode), detail)
 			}
-			return buildStatusResponse(cfg.NonStreamStatusCode, detail, lastHeaders)
+			return buildStatusResponse(int(cfg.NonStreamStatusCode), detail, lastHeaders)
 		}
 
 		// no match → success path
@@ -147,7 +162,7 @@ func executeWithRetry(raw []byte) ([]byte, error) {
 	// Loop exited without return — exhausted on capacity errors.
 	atomic.AddInt64(&stats.ActualInterceptions, 1)
 	atomic.AddInt64(&stats.Returned502, 1)
-	return buildStatusResponse(cfg.NonStreamStatusCode, "retry_budget_exhausted", lastHeaders)
+	return buildStatusResponse(int(cfg.NonStreamStatusCode), "retry_budget_exhausted", lastHeaders)
 }
 
 // executeStreamWithRetry handles streaming responses: we buffer the full stream via
@@ -183,12 +198,12 @@ func executeStreamWithRetry(raw []byte) ([]byte, error) {
 
 func runStreamWithRetry(req rpcExecutorRequest, streamID string) error {
 	cfg := loadedConfig()
-	if !cfg.Enabled || !cfg.InterceptStreaming {
+	if !bool(cfg.Enabled) || !bool(cfg.InterceptStreaming) {
 		return executeStreamPassThrough(req, streamID)
 	}
 
 	atomic.AddInt64(&stats.TotalRequests, 1)
-	retryBudget := cfg.GuardRetryAttempts
+	retryBudget := int(cfg.GuardRetryAttempts)
 	if retryBudget < 0 {
 		retryBudget = 5
 	}
@@ -204,7 +219,7 @@ func runStreamWithRetry(req rpcExecutorRequest, streamID string) error {
 		if matchUpstreamCapacityError(buf, status, cfg) {
 			atomic.AddInt64(&stats.RuleMatches, 1)
 			atomic.AddInt64(&stats.InternalRetries, 1)
-			if cfg.LogMatch {
+			if bool(cfg.LogMatch) {
 				pluginLog("stream_capacity_error_retry attempt=%d/%d", attempt+1, retryBudget)
 			}
 			continue
@@ -214,14 +229,14 @@ func runStreamWithRetry(req rpcExecutorRequest, streamID string) error {
 			atomic.AddInt64(&stats.RuleMatches, 1)
 			if attempt+1 <= retryBudget {
 				atomic.AddInt64(&stats.InternalRetries, 1)
-				if cfg.LogMatch {
+				if bool(cfg.LogMatch) {
 					pluginLog("stream_reasoning_tokens_match action=internal_retry remaining=%d %s", retryBudget-attempt, detail)
 				}
 				continue
 			}
 			atomic.AddInt64(&stats.ActualInterceptions, 1)
 			atomic.AddInt64(&stats.Returned502, 1)
-			if cfg.LogMatch {
+			if bool(cfg.LogMatch) {
 				pluginLog("stream_reasoning_tokens_match action=close_with_error %s", detail)
 			}
 			return fmt.Errorf("retry-gateway: %s", detail)

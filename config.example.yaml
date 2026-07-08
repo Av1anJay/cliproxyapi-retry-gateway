@@ -33,6 +33,7 @@ plugins:
       # Emit host log lines on every match.
       log_match: true
 
-      # Optional provider filter — empty intercepts everything;
-      # restrict to ["codex"] to only proxy OpenAI Codex operations through the gateway.
-      upstream_providers: []
+      # Provider/model prefixes routed through the plugin. Default is codex-only
+      # so the plugin does not hijack unrelated models. Use ["*"] only when you
+      # intentionally want every request to pass through the retry gateway.
+      upstream_providers: ["codex"]

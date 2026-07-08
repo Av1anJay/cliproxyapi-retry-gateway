@@ -88,13 +88,61 @@ type runtimeStats struct {
 	Returned502         int64 `json:"returned_502"`
 }
 
-// intList accepts either YAML numbers or quoted numeric strings.
-// Management UIs sometimes serialize array items as strings; accepting both keeps
-// hot reloads robust instead of failing plugin.reconfigure.
+// flexBool/flexInt/intList/stringList accept the loose YAML shapes produced by
+// CPA's generic management UI. Empty strings/nulls are treated as "not set" so
+// they do not overwrite plugin defaults during hot reload.
+type flexBool bool
+
+type flexInt int
+
 type intList []int
 
+type stringList []string
+
+func (b *flexBool) UnmarshalYAML(node *yaml.Node) error {
+	if b == nil || yamlNodeEmpty(node) {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		raw := strings.TrimSpace(node.Value)
+		if raw == "" {
+			return nil
+		}
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("invalid boolean %q", raw)
+		}
+		*b = flexBool(value)
+		return nil
+	default:
+		return fmt.Errorf("expected boolean, got YAML kind %d", node.Kind)
+	}
+}
+
+func (i *flexInt) UnmarshalYAML(node *yaml.Node) error {
+	if i == nil || yamlNodeEmpty(node) {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		raw := strings.TrimSpace(node.Value)
+		if raw == "" {
+			return nil
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("invalid integer %q", raw)
+		}
+		*i = flexInt(value)
+		return nil
+	default:
+		return fmt.Errorf("expected integer, got YAML kind %d", node.Kind)
+	}
+}
+
 func (l *intList) UnmarshalYAML(node *yaml.Node) error {
-	if l == nil || node == nil {
+	if l == nil || yamlNodeEmpty(node) {
 		return nil
 	}
 	var out []int
@@ -130,22 +178,65 @@ func (l *intList) UnmarshalYAML(node *yaml.Node) error {
 	default:
 		return fmt.Errorf("expected integer list, got YAML kind %d", node.Kind)
 	}
-	*l = out
+	if len(out) > 0 {
+		*l = out
+	}
 	return nil
+}
+
+func (l *stringList) UnmarshalYAML(node *yaml.Node) error {
+	if l == nil || yamlNodeEmpty(node) {
+		return nil
+	}
+	var out []string
+	appendOne := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw != "" {
+			out = append(out, raw)
+		}
+	}
+	switch node.Kind {
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			if item != nil {
+				appendOne(item.Value)
+			}
+		}
+	case yaml.ScalarNode:
+		for _, part := range strings.Split(node.Value, ",") {
+			appendOne(part)
+		}
+	default:
+		return fmt.Errorf("expected string list, got YAML kind %d", node.Kind)
+	}
+	if len(out) > 0 {
+		*l = out
+	}
+	return nil
+}
+
+func yamlNodeEmpty(node *yaml.Node) bool {
+	if node == nil || node.Kind == 0 {
+		return true
+	}
+	if node.Tag == "!!null" {
+		return true
+	}
+	return node.Kind == yaml.ScalarNode && strings.TrimSpace(node.Value) == ""
 }
 
 // pluginConfig is the per-request configuration loaded from plugins.configs.codex-retry-gateway.
 type pluginConfig struct {
-	Enabled               bool     `yaml:"enabled"`
-	ReasoningEquals       intList  `yaml:"reasoning_equals"`
-	ReasoningMatchMode    string   `yaml:"reasoning_match_mode"`
-	InterceptStreaming    bool     `yaml:"intercept_streaming"`
-	InterceptNonStreaming bool     `yaml:"intercept_non_streaming"`
-	GuardRetryAttempts    int      `yaml:"guard_retry_attempts"`
-	NonStreamStatusCode   int      `yaml:"non_stream_status_code"`
-	RetryCapacityErrors   bool     `yaml:"retry_upstream_capacity_errors"`
-	LogMatch              bool     `yaml:"log_match"`
-	UpstreamProviders     []string `yaml:"upstream_providers"`
+	Enabled               flexBool   `yaml:"enabled"`
+	ReasoningEquals       intList    `yaml:"reasoning_equals"`
+	ReasoningMatchMode    string     `yaml:"reasoning_match_mode"`
+	InterceptStreaming    flexBool   `yaml:"intercept_streaming"`
+	InterceptNonStreaming flexBool   `yaml:"intercept_non_streaming"`
+	GuardRetryAttempts    flexInt    `yaml:"guard_retry_attempts"`
+	NonStreamStatusCode   flexInt    `yaml:"non_stream_status_code"`
+	RetryCapacityErrors   flexBool   `yaml:"retry_upstream_capacity_errors"`
+	LogMatch              flexBool   `yaml:"log_match"`
+	UpstreamProviders     stringList `yaml:"upstream_providers"`
 }
 
 type envelope struct {
@@ -351,16 +442,16 @@ func configure(raw []byte) error {
 
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
-		Enabled:               true,
+		Enabled:               flexBool(true),
 		ReasoningEquals:       intList{516, 1034, 1552, 2070, 2588, 3106},
 		ReasoningMatchMode:    "formula_518n_minus_2",
-		InterceptStreaming:    true,
-		InterceptNonStreaming: true,
-		GuardRetryAttempts:    5,
-		NonStreamStatusCode:   502,
-		RetryCapacityErrors:   true,
-		LogMatch:              true,
-		UpstreamProviders:     []string{},
+		InterceptStreaming:    flexBool(true),
+		InterceptNonStreaming: flexBool(true),
+		GuardRetryAttempts:    flexInt(5),
+		NonStreamStatusCode:   flexInt(502),
+		RetryCapacityErrors:   flexBool(true),
+		LogMatch:              flexBool(true),
+		UpstreamProviders:     stringList{"codex"},
 	}
 }
 
@@ -369,20 +460,63 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 	if errUnmarshal := yaml.Unmarshal(raw, &cfg); errUnmarshal != nil {
 		return pluginConfig{}, errUnmarshal
 	}
+	cfg = repairBlankManagementDefaults(cfg)
 	cfg.ReasoningMatchMode = strings.TrimSpace(cfg.ReasoningMatchMode)
 	if cfg.ReasoningMatchMode == "" {
 		cfg.ReasoningMatchMode = "formula_518n_minus_2"
 	}
 	if cfg.GuardRetryAttempts < 0 {
-		cfg.GuardRetryAttempts = 5
+		cfg.GuardRetryAttempts = flexInt(5)
 	}
 	if cfg.NonStreamStatusCode == 0 {
-		cfg.NonStreamStatusCode = 502
+		cfg.NonStreamStatusCode = flexInt(502)
 	}
-	if cfg.GuardRetryAttempts == 0 {
-		// 0 means no retries, intercept immediately
+	cfg.UpstreamProviders = normalizeProviderList(cfg.UpstreamProviders)
+	if len(cfg.UpstreamProviders) == 0 {
+		cfg.UpstreamProviders = defaultPluginConfig().UpstreamProviders
 	}
 	return cfg, nil
+}
+
+func repairBlankManagementDefaults(cfg pluginConfig) pluginConfig {
+	// CPA's generic config UI has no default-value schema. On first save, it can
+	// submit an empty form as false/0/empty values for every field. That should not
+	// disable the plugin's retry behavior. Treat this exact zero-state as "unset".
+	if cfg.ReasoningMatchMode == "" &&
+		len(cfg.ReasoningEquals) > 0 &&
+		!bool(cfg.InterceptStreaming) &&
+		!bool(cfg.InterceptNonStreaming) &&
+		cfg.GuardRetryAttempts == 0 &&
+		cfg.NonStreamStatusCode == 0 &&
+		!bool(cfg.RetryCapacityErrors) &&
+		!bool(cfg.LogMatch) {
+		defaults := defaultPluginConfig()
+		cfg.InterceptStreaming = defaults.InterceptStreaming
+		cfg.InterceptNonStreaming = defaults.InterceptNonStreaming
+		cfg.GuardRetryAttempts = defaults.GuardRetryAttempts
+		cfg.NonStreamStatusCode = defaults.NonStreamStatusCode
+		cfg.RetryCapacityErrors = defaults.RetryCapacityErrors
+		cfg.LogMatch = defaults.LogMatch
+	}
+	return cfg
+}
+
+func normalizeProviderList(in stringList) stringList {
+	out := make(stringList, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		key := strings.ToLower(item)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func loadedConfig() pluginConfig {
@@ -404,7 +538,7 @@ func pluginRegistration() registration {
 		{Name: "non_stream_status_code", Type: pluginapi.ConfigFieldTypeInteger, Description: "HTTP status code returned to client when retries exhausted (default 502)."},
 		{Name: "retry_upstream_capacity_errors", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Retry on upstream 'Selected model is at capacity' errors."},
 		{Name: "log_match", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Log match details to plugin host log."},
-		{Name: "upstream_providers", Type: pluginapi.ConfigFieldTypeArray, Description: "Provider keys to route matching requests through (e.g. [\"codex\"]). Empty = route all."},
+		{Name: "upstream_providers", Type: pluginapi.ConfigFieldTypeArray, Description: "Provider/model prefixes routed through the plugin. Default is [\"codex\"]; use [\"*\"] only to route all requests."},
 	}
 	_ = cfg
 	return registration{

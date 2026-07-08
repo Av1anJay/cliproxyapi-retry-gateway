@@ -11,7 +11,7 @@ import (
 // matchMode values
 const (
 	matchModeFormula = "formula_518n_minus_2"
-	matchModeManual   = "manual"
+	matchModeManual  = "manual"
 )
 
 // capacityErrorMarker is the substring in upstream error messages that triggers a capacity retry.
@@ -65,7 +65,7 @@ func matchReasoningTokens(body []byte, cfg pluginConfig) (bool, string, string) 
 // matchUpstreamCapacityError checks if the response body contains an upstream
 // "model at capacity" error that we should retry through.
 func matchUpstreamCapacityError(body []byte, statusCode int, cfg pluginConfig) bool {
-	if !cfg.RetryCapacityErrors {
+	if !bool(cfg.RetryCapacityErrors) {
 		return false
 	}
 	if statusCode < 400 && statusCode != 0 {

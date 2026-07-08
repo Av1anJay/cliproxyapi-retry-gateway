@@ -50,9 +50,9 @@ plugins:
       non_stream_status_code: 502
       retry_upstream_capacity_errors: true
       log_match: true
-      upstream_providers: []                       # empty = intercept everything;
-                                                   # set ["codex"] to only proxy codex ops
-                                                   # through the gateway
+      upstream_providers: ["codex"]                # provider/model prefixes to route through the plugin;
+                                                   # use ["*"] only if you intentionally want all requests
+                                                   # to pass through the retry gateway
 ```
 
 ### Config field reference
@@ -68,7 +68,7 @@ plugins:
 | `non_stream_status_code` | int | `502` | Final HTTP status returned to client when retries exhausted |
 | `retry_upstream_capacity_errors` | bool | `true` | Retry when upstream reports "model at capacity" |
 | `log_match` | bool | `true` | Emit host log lines on every match |
-| `upstream_providers` | array | `[]` | Optional provider-key filter (`["codex"]`, `["claude"]`, …). Empty intercepts everything. |
+| `upstream_providers` | array | `["codex"]` | Provider/model prefixes routed through the plugin (`["codex"]`, `["claude"]`, …). Use `["*"]` to intentionally route everything. Empty/blank UI values fall back to `["codex"]`. |
 
 ## Install
 
